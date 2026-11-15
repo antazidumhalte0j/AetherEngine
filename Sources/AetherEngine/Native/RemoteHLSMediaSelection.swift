@@ -86,6 +86,28 @@ enum RemoteHLSMediaSelection {
         return true
     }
 
+    /// A VOD URL whose path names a playlist (`.m3u8` / `.m3u`, as `isKnownLivePlaylist` reads it) that
+    /// failed to open on the loopback path for any reason but the origin's own refusal: the AE#154
+    /// reroute's destination is right for it whatever its first answer looked like. An origin that once
+    /// answered the reader with bytes other than the playlist (seen on Apple's trailer CDN,
+    /// play-edge.itunes.apple.com, intermittently: FFmpeg's AVERROR_INVALIDDATA on the open, or "answers
+    /// byte ranges with other bytes" on the reader's range check) failed the load where AVPlayer, asked
+    /// again, played it. A refusal (an HTTP status, a certificate failure) still fails as itself: AVPlayer
+    /// would be refused too, and the host is told why.
+    static func shouldRerouteNamedPlaylist(failure: Error?, url: URL, isLive: Bool, isCustomSource: Bool) -> Bool {
+        guard !isCustomSource, !isLive, let failure, !(failure is CancellationError),
+              ["m3u8", "m3u"].contains(url.pathExtension.lowercased()) else { return false }
+        if let readerError = failure as? AVIOReaderError {
+            switch readerError {
+            case .httpStatus, .transportSecurityFailed:
+                return false
+            default:
+                break
+            }
+        }
+        return true
+    }
+
     /// AE#363: the live counterpart, and a correction to the AE#140 fail-closed contract. That contract
     /// was right about the loop it removed and wrong about what to do afterwards: the engine holds
     /// `HLSLiveIngestReader`, which is the only live path that puts `LoadOptions.httpHeaders` on the
