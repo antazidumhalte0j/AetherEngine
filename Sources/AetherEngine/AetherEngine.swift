@@ -6641,9 +6641,13 @@ public final class AetherEngine: ObservableObject {
             // rather than surfacing a terminal failure for a source AVPlayer can play. A full load()
             // restart (the #168 reroute's shape) is what clears the half-built loopback session; the
             // bypass runs no probe, so this cannot bounce back here a second time.
-            if RemoteHLSMediaSelection.shouldReroute(failure: error, isCustomSource: isCustomSource),
-               case .url(let hlsURL) = source,
-               loadGeneration == gen {
+            // Fork (aiostreams): or the URL names a playlist and its open failed for another reason than the
+            // origin's refusal (`shouldRerouteNamedPlaylist`), as Apple's trailer CDN's did now and then.
+            let provenByBody = RemoteHLSMediaSelection.shouldReroute(failure: error, isCustomSource: isCustomSource)
+            if case .url(let hlsURL) = source,
+               loadGeneration == gen,
+               provenByBody || RemoteHLSMediaSelection.shouldRerouteNamedPlaylist(
+                   failure: error, url: hlsURL, isLive: loadedOptions.isLive, isCustomSource: isCustomSource) {
                 if case .taken(let probe) = try await rerouteOntoMPEGTSIngest(
                     playlistURL: hlsURL,
                     options: loadedOptions,
@@ -6656,13 +6660,17 @@ public final class AetherEngine: ObservableObject {
                     return probe
                 }
                 EngineLog.emit(
-                    "[AetherEngine] AE#246: the loopback session's own open classified the source as HLS; "
-                    + "taking the AE#154 reroute onto the native remote-HLS bypass",
+                    provenByBody
+                        ? "[AetherEngine] AE#246: the loopback session's own open classified the source as HLS; "
+                            + "taking the AE#154 reroute onto the native remote-HLS bypass"
+                        : "[AetherEngine] a VOD .m3u8 failed to open on the loopback path (\(error.localizedDescription)); "
+                            + "taking the AE#154 reroute onto the native remote-HLS bypass",
                     category: .engine
                 )
                 var rerouted = loadedOptions
                 rerouted.nativeRemoteHLS = true
-                rerouted.hlsPlaylistProvenByBody = true
+                // The URL's extension is what AVFoundation reads an asset by, so a named playlist needs no override.
+                rerouted.hlsPlaylistProvenByBody = provenByBody
                 continueStartupAcrossReroute()   // #361, same wait, different route
                 _ = try await load(source: .url(hlsURL), startPosition: startPosition, options: rerouted)
                 return nil
